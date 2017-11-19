@@ -11,3 +11,6 @@ case object NotFound extends HttpStatus(code = 404) {
 case object MethodNotAllowed extends HttpStatus(code = 405) {
   override def toString: String = code + " Method Not Allowed"
 }
+case object Forbidden extends HttpStatus(code = 403) {
+  override def toString: String = code + " Forbidden"
+}

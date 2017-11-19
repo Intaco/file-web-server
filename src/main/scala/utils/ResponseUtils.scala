@@ -7,7 +7,7 @@ import http._
 
 object ResponseUtils {
 
-  val ROOT: String = "D:\\work\\scala\\web-server"
+  val ROOT: String = "./"
 
   def toRequestData(request: String): RequestData = {
     val lines = request.split("\n")
@@ -20,8 +20,6 @@ object ResponseUtils {
       RequestData(method, path, protocol)
     }
   }
-
-  def responseBuilder = new ResponseHeadersBuilder
 
   private val responseDateFormat = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss z")
 

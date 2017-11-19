@@ -5,8 +5,8 @@ import java.nio.file.{Files, Paths}
 import akka.actor.{Actor, ActorLogging, ActorRef}
 import akka.io.Tcp.Event
 import akka.util.ByteString
-import http.Method.{GET, HEAD}
-import http.{MethodNotAllowed, NotFound, OK}
+import http.Method.{GET, HEAD, HttpMethod}
+import http._
 import org.apache.tika.Tika
 import utils.ResponseUtils._
 
@@ -22,7 +22,7 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
     case Received(data) => {
       log.info(data.utf8String)
       val requestData = toRequestData(data.utf8String)
-      val builder = responseBuilder
+      val builder = new ResponseHeadersBuilder()
       if (requestData.requestPath.split("/").exists(_.startsWith(".."))) {
         val response = builder.responseLine(requestData.protocol, NotFound).build
         sender() ! Write(ByteString(response), ConnectionFinish)
@@ -33,7 +33,8 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
         var filePathString = URLDecoder.decode(ROOT + requestData.requestPath, StandardCharsets.UTF_8.name())
         val pathProbe = Paths.get(filePathString) //TODO ???
 
-        if (Files.exists(pathProbe) && Files.isDirectory(pathProbe)) filePathString += "index.html"
+        val isExistingDir = Files.exists(pathProbe) && Files.isDirectory(pathProbe)
+        if (isExistingDir) filePathString += "index.html"
 
         if (Files.exists(Paths.get(filePathString))) {
           val filePath = Paths.get(filePathString)
@@ -52,6 +53,8 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
             sender() ! WriteFile(filePathString, 0, 2048, WritingFile(filePathString, 2048, 2048, contentLength))
           else
             sender() ! Close
+        } else if (isExistingDir) {
+          sender() ! Write(ByteString(emptyResponseBody(requestData.protocol, Forbidden)), ConnectionFinish)
         } else {
           val response = builder.responseLine(requestData.protocol, NotFound)
             .headerLine("Server", "AkkaHttpFileServer")
@@ -73,5 +76,14 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
       }
 
     case PeerClosed => context stop self
+  }
+
+  private def emptyResponseBody(protocol: String, status: HttpStatus): String = {
+    new ResponseHeadersBuilder().responseLine(protocol, status)
+      .headerLine("Server", "AkkaHttpFileServer")
+      .headerLine("Date", currentTime())
+      .headerLine("Connection", "close")
+      .emptyLine()
+      .build
   }
 }

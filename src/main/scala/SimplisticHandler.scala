@@ -10,9 +10,7 @@ import http._
 import org.apache.tika.Tika
 import utils.ResponseUtils._
 
-case object ConnectionFinish extends Event
-
-case class WritingFile(filePath: String, position: Int, chunkSize: Int, fileSize: Long) extends Event
+case object WriteFinished extends Event
 
 class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
 
@@ -20,18 +18,17 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
 
   def receive = {
     case Received(data) => {
-      log.info(data.utf8String)
       val requestData = toRequestData(data.utf8String)
       val builder = new ResponseHeadersBuilder()
       if (requestData.requestPath.split("/").exists(_.startsWith(".."))) {
         val response = builder.responseLine(requestData.protocol, NotFound).build
-        sender() ! Write(ByteString(response), ConnectionFinish)
+        sender() ! Write(ByteString(response), WriteFinished)
       } else if (requestData.method != GET && requestData.method != HEAD) {
         val response = builder.responseLine(requestData.protocol, MethodNotAllowed).build
-        sender() ! Write(ByteString(response), ConnectionFinish)
+        sender() ! Write(ByteString(response), WriteFinished)
       } else {
         var filePathString = URLDecoder.decode(ROOT + requestData.requestPath, StandardCharsets.UTF_8.name())
-        val pathProbe = Paths.get(filePathString) //TODO ???
+        val pathProbe = Paths.get(filePathString)
 
         val isExistingDir = Files.exists(pathProbe) && Files.isDirectory(pathProbe)
         if (isExistingDir) filePathString += "index.html"
@@ -50,11 +47,11 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
             .build
           sender() ! Write(ByteString(response))
           if (requestData.method == GET)
-            sender() ! WriteFile(filePathString, 0, 2048, WritingFile(filePathString, 2048, 2048, contentLength))
+            sender() ! createWrites(filePathString, contentLength)
           else
             sender() ! Close
         } else if (isExistingDir) {
-          sender() ! Write(ByteString(emptyResponseBody(requestData.protocol, Forbidden)), ConnectionFinish)
+          sender() ! Write(ByteString(emptyResponseBody(requestData.protocol, Forbidden)), WriteFinished)
         } else {
           val response = builder.responseLine(requestData.protocol, NotFound)
             .headerLine("Server", "AkkaHttpFileServer")
@@ -62,20 +59,31 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
             .headerLine("Connection", "close")
             .emptyLine()
             .build
-          sender() ! Write(ByteString(response), ConnectionFinish)
+          sender() ! Write(ByteString(response), WriteFinished)
         }
       }
     }
 
-    case ConnectionFinish =>
+    case WriteFinished =>
       sender() ! Close
-    case WritingFile(path, position, chunkSize, fileSize) =>
-      sender() ! WriteFile(path, position, chunkSize, WritingFile(path, position + chunkSize, chunkSize, fileSize))
-      if (fileSize < position + chunkSize) {
-        sender() ! Close
-      }
 
     case PeerClosed => context stop self
+  }
+
+  private val chunkSize = 2048
+
+  private def createWrites(filePathString: String, contentLength: Long, pos: Long = 0): WriteCommand = {
+    val posDiff = contentLength - pos // should never be 0
+    val requiresNextWrite = posDiff > chunkSize
+    val thisChunk = if (requiresNextWrite) {
+      chunkSize
+    } else posDiff
+
+    if (!requiresNextWrite) {
+      WriteFile(filePathString, pos, thisChunk, WriteFinished)
+    } else {
+      WriteFile(filePathString, pos, thisChunk, NoAck) +: createWrites(filePathString, contentLength, pos + thisChunk)
+    }
   }
 
   private def emptyResponseBody(protocol: String, status: HttpStatus): String = {

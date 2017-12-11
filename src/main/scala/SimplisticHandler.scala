@@ -5,7 +5,7 @@ import java.nio.file.{Files, Paths}
 import akka.actor.{Actor, ActorLogging, ActorRef}
 import akka.io.Tcp.Event
 import akka.util.ByteString
-import http.Method.{GET, HEAD, HttpMethod}
+import http.Method.{GET, HEAD}
 import http._
 import org.apache.tika.Tika
 import utils.ResponseUtils._
@@ -46,8 +46,24 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
             .emptyLine()
             .build
           sender() ! Write(ByteString(response))
-          if (requestData.method == GET)
-            sender() ! createWrites(filePathString, contentLength)
+          if (requestData.method == GET) {
+            import java.io.{FileInputStream, IOException}
+            try {
+              val ios = new FileInputStream(filePathString)
+              try {
+                val buffer = new Array[Byte](1024)
+                var read = ios.read(buffer)
+                while (read != -1) {
+                  sender() ! Write(ByteString(buffer), NoAck)
+                  read = ios.read(buffer)
+                }
+              } catch {
+                case e: IOException =>
+                  log.error(s"something went wrong... ${e.getMessage}")
+              } finally if (ios != null) ios.close()
+              sender() ! Close
+            }
+          }
           else
             sender() ! Close
         } else if (isExistingDir) {
@@ -70,7 +86,7 @@ class SimplisticHandler(connection: ActorRef) extends Actor with ActorLogging {
     case PeerClosed => context stop self
   }
 
-  private val chunkSize = 2048
+  private val chunkSize = 512 * 1024
 
   private def createWrites(filePathString: String, contentLength: Long, pos: Long = 0): WriteCommand = {
     val posDiff = contentLength - pos // should never be 0
